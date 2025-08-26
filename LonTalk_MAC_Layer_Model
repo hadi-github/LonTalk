@@ -1,0 +1,1506 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+	<declaration>// Place global declarations here.
+//CONSTANTS
+//channel and system constant
+const int ratio=1; // ratio is the parameter that all output measure will divide to it and each bit in report has the size of ratio bit =&gt; it is a changeing scale like maps
+const int v1=2; //166//tuning parameter based on M68360 microprocessor
+const int CT=15; //15//time base parameter based on M68360 microprocessor 
+const int xmit=2;//119
+const int recv=2;//103
+const int packet_cycle=63; //maximum random cycle correspond to BL and is used for random_idle state to show when this time is expired it is time to decrement BL in each cycle //parameter of M68360 microprocessor (page 328 of standard)
+const int cycleTicks=(packet_cycle*1794*CT)/ratio; // based on M68360 microprocessor (page 114)
+const int ch_priority=8; // based on M68360 microprocessor (page 330)
+//const int b1_idle=70; //or other values
+const int b1_tx=((624+(40+20*v1)+(41*xmit))*CT)/ratio; //factor 1000 to decrease modeling time // xmit == xmit_interpacket and this formula is for xmit&lt;128 for xmit&gt;128: use 145*(xmit-128) instead of 41*xmit
+const int b1_rx=((602+(40+20*v1)+(41*recv))*CT)/ratio; //factor 1000 to decrease modeling time // rec == recv_interpacket and this formula is for recv&lt;128 for recv&gt;128: use 145*(recv-128) instead of 41*xmit
+const int b2=(CT*(40+20*v1))/ratio; //factor 1000 to decrease modeling time 
+const int wbase=16; //is the number of randomising slots within the basic randomising window
+//const int pri_slots=4*b2; // priority duration(number of priority slots)
+const int pri_rx=(ch_priority)*b2; // priority duration(number of priority slots) in case of receiving
+const int pri_tx=(ch_priority+wbase)*b2; // priority duration(number of priority slots) in case of sending
+const int t_frame=1024/ratio; //148//bit time for sending frame (frame consist of preamble+packet size) in bit
+const int MAX_BL=63;
+const int packet_numbers=32767; //numbers of message that are produced by nodes
+const int nodes=6; //numbers of nodes
+//const int packet_cycle_time = 3*( b1_idle+pri_slots+b2*((MAX_BL*wbase)-1) )+ t_frame; //==42820
+//node constant
+const int avg=100; //const int avg=packet_numbers/nodes; //FIFOs size of each node
+const int jitter=1/ratio;//delay for load the message or ack message from FIFO to next_packet when next_packet is empty or delay to reset received_packet register (delay for working with registers that deals with top layers)
+const int delta=1; //delta variable to add to the BL variable
+
+//const int random_idle_max=max; //max delay that maybe has been waited in random_idle location until message has been ready
+const int tx_max=1; //max delay maybe has been waited in start transmission location until transmission has been started
+const int coll_max=0; //max delay maybe has been waited in collison location in channel ("44" is for length of preamble) (collision will be detected in our assumption and it will take a length of preamble to recognize it in maximum) //in our presumption Comm_type = 2 and therefore there is no preamble and this time must assume zero
+const struct {int aa,bb;} exp_time={1,10052}; //exp_time==packet_cycle_time==42820=="1" "10052" // is equal to "Xmit_Timer &gt; 3 * packet cycle time + margin" in standard//aabb  it's the time duration that if expired after the message has been sent, the message must be sent again
+//other useful constant
+const int max=32767;
+const int max_int=32767; //max number for integer
+//VARIABLES
+//node variables
+bool cycleTimerRestart[nodes];
+int blg=1;  // bl is variable from 1 to 63
+struct {int idd;bool type;}  next_packet[nodes]; // type==true is msg, type==false is ack
+bool kind[nodes]; //kind==true means tx and false means receiveing
+int fifo[nodes][avg]; //FiFo of messages
+int fifo_ack[nodes][avg]; //FiFo of ack messages
+int fifo_numbers[nodes]; //number of messages and ack messages that is queued to be sent (messages that not is not sent yet or not received ack yet; ack messages that are not sent yet)
+int cycle_timer[nodes]; //packet cycle timer of each node, and it count down whenever random_idle state is active and halt when it is not.
+int bl[nodes]; //local BL for nodes
+bool coll_event[nodes];
+//channel variables
+int b1_idle;
+int pri_slots;
+int channel_busy=0; //variable for determine the channel status using in simulation or verification
+struct {int idd;bool type;}  send_packet = {-255,false}; // type==true is msg, type==false is ack
+struct {int aa,bb;} clk; //global clack of the system and its order is: aabb
+int flag=0;
+int r_slot; //maximum number of random slots correspond to amount of BL in each cycle
+struct {int idd;bool type;} received_packet; //show successful received message in last transition and all node will have received this successfully
+//packet variables
+int pr[packet_numbers], packet=0;
+int  coll[packet_numbers][2]; //coll[][0] is for msg , coll[][1] is for ack msg
+struct {int src,dest,time[2],send_cnt,rec_cnt,coll_num[2]; bool sent,ack_rec;} msg_array[packet_numbers]; //it is the log of all messages that has been generated and the information about their destinations, transmission time in order of time[0]time[1], counter for number of try to send in channel (lost, successful), number of successfully received by receiver (it is logged by receivers nodes and will be used as a top view of system to see how many times this message was sent and received but ack message was not received successfully) and  coll[0] is number of collisions of message and coll[1] is for ack of this messages respectively
+//CHANNELS
+broadcast chan packet_sent, msg_recev, ch_coll,ch_busy, transmit; // p_ready[nodes] must define broadcast, because when it enables in consumer model, in node model maybe appropriate locatian is not active
+urgent broadcast chan p_ready[nodes],ack_rec[nodes],tick[nodes],ch_free;
+//chan idle_chan[nodes];
+//chan priority packet_sent &lt; msg_recev &lt; default &lt; ch_free;
+//SIMULATION VARIABLES
+//nodes simulation variables
+struct {int aa,bb;} msg_delay_start[nodes]; //start time of last message has been sent by node
+struct {int aa,bb;} msg_delay_start_ack[nodes];
+struct {int aa,bb;} msg_delay[nodes]; //message delay of last message has been sent by node
+int coll_count_dot[nodes],coll_count[nodes]; // coll_count_dot show the amount of collisions happen in plot_show length//coll_count[] show the amount of collision happens in one node
+int node_th_dot[nodes], node_th[nodes]; //node_th show the amount of packet has been sent in last one second (plot_show length)
+//channel simulation variables
+int chan_th_dot,chan_th; //chan_th_dot shows the amount of messages has been sent on last second (plot_show length)
+int total_coll_dot,total_coll;
+//other simulation variables
+//int trace1[nodes],trace2[nodes],trace3[nodes],trace4[nodes];
+//int trace;
+//FUNCTIONS
+void initialize()
+{
+  received_packet.idd=-1;
+  for (k : int[0,nodes-1]) 
+  {
+        bl[k]=1;
+        cycleTimerRestart[k]=true;
+        next_packet[k].idd=-1;
+        for(l : int[0,avg-1])
+            {
+                fifo[k][l]=-1;
+                fifo_ack[k][l]=-1;
+            }
+  }
+  for (t : int[0,packet_numbers-1])
+  {
+        msg_array[t].src=-1;
+        msg_array[t].dest=-1;
+  }
+}
+void incrementBL(int &amp;lbl,int deltaa)
+{
+    if(deltaa &gt; MAX_BL)    return;
+    if(deltaa &gt; 0) lbl = lbl + deltaa;
+    else if(deltaa == 0) lbl = lbl-1;  
+    if (lbl &gt; MAX_BL)  lbl = MAX_BL;
+}
+void decrementBL(int &amp;lbl,int deltaa)
+{
+    if(deltaa &gt; MAX_BL)   { return;}
+    if(deltaa &gt;= lbl) {lbl=1;}
+        else {lbl = lbl - deltaa;}  
+}
+bool addtofifo(int value, int index1, int &amp;array[nodes][avg])
+{
+    int p=0;
+    while (p&lt;avg and array[index1][p]!=value) {p++;}
+    if (p&lt;avg) {return false;}
+    p=0;
+    while (p&lt;avg and array[index1][p]!=-1) {p++;}
+    if (p&gt;=avg) {return false;}
+    array[index1][p]=value;
+    return true;
+}
+int firstack(int index1, int array[nodes][avg])
+{    
+    return array[index1][0];
+}
+bool clk_fsts(int clk_a1, int clk_b1, int clk_a2, int clk_b2)//first smaller than second : clk_a1clk_b1  &lt; clk_a2clk_b2 
+{    
+    if(clk_a1&lt;clk_a2)    return true;
+    if(clk_a1==clk_a2 &amp;&amp; clk_b1&lt;clk_b2)    return true;
+    return false;
+}
+bool clk_compr(int clk_a1, int clk_b1, int clk_a2, int clk_b2)//clk_a1clk_b1    , clk_a2clk_b2
+{    
+    int a,b;
+    if (clk_a1&gt;=clk_a2 &amp;&amp; clk_b1&gt;=clk_b2)
+        {    
+            a=clk_a1-clk_a2; 
+            b=clk_b1-clk_b2;
+        }
+    if (clk_a1&gt;=clk_a2 &amp;&amp; clk_b1&lt;clk_b2)
+        {    
+            a=clk_a1-clk_a2-1;   
+            b=max_int-(clk_b2-clk_b1)+1;
+        } //other conditions is not possible because peresent clk is always greater than clk that saved to msg
+    //comparison with exp_time
+    if(exp_time.aa&lt;a)    return true;
+    if(exp_time.aa==a &amp;&amp; exp_time.bb&lt;b)    return true;
+    return false;
+}
+int clk_deduction_a(int clk_a1, int clk_b1, int clk_a2, int clk_b2)//clk_a1clk_b1    , clk_a2clk_b2
+{    
+    int a,b;
+    if (clk_a1&gt;=clk_a2 &amp;&amp; clk_b1&gt;=clk_b2)
+        {    
+            a=clk_a1-clk_a2; 
+            //b=clk_b1-clk_b2;
+        }
+    if (clk_a1&gt;=clk_a2 &amp;&amp; clk_b1&lt;clk_b2)
+        {    
+            a=clk_a1-clk_a2-1;   
+            //b=max_int-(clk_b2-clk_b1)+1;
+        } //other conditions is not possible because peresent clk is always greater than clk that saved to msg
+    return a;
+}
+int clk_deduction_b(int clk_a1, int clk_b1, int clk_a2, int clk_b2)//clk_a1clk_b1    , clk_a2clk_b2
+{    
+    int a,b;
+    if (clk_a1&gt;=clk_a2 &amp;&amp; clk_b1&gt;=clk_b2)
+        {    
+            //a=clk_a1-clk_a2; 
+            b=clk_b1-clk_b2;
+        }
+    if (clk_a1&gt;=clk_a2 &amp;&amp; clk_b1&lt;clk_b2)
+        {    
+            //a=clk_a1-clk_a2-1;   
+            b=max_int-(clk_b2-clk_b1)+1;
+        } //other conditions is not possible because peresent clk is always greater than clk that saved to msg
+    return b;
+}
+int firstmsg(int index1, int g_clk_a, int g_clk_b, int array[nodes][avg], struct {int src,dest,time[2],send_cnt,rec_cnt,coll_num[2]; bool sent,ack_rec;} msg[packet_numbers]) //g_clk is equal to clk and must be set in model and msg[] is equal to msg_array[] and must be set in model
+{
+    int p=0;
+    while (p&lt;avg)
+    {
+        if (array[index1][p]==-1) return -1;
+        if (msg[array[index1][p]].sent!=true or clk_compr(g_clk_a, g_clk_b, msg[array[index1][p]].time[0], msg[array[index1][p]].time[1])) return array[index1][p];
+        p++;
+    }
+    return -1;
+}
+bool deletefromfifo(int value, int index1, int &amp;array[nodes][avg])
+{
+    int p=0;
+    while (p&lt;avg and array[index1][p]!=value)    
+    {
+        p++;
+        if (p&gt;=avg)   return false;
+    }
+    while (p&lt;avg-1)
+    {    
+        array[index1][p]=array[index1][p+1];
+        p++;
+    }
+    array[index1][p]=-1;
+    return true;
+}
+void m_d(int srcid,int clkaa, int clkbb)
+{
+    msg_delay[srcid].aa=clk_deduction_a(clkaa,clkbb,msg_delay_start[srcid].aa,msg_delay_start[srcid].bb);
+    msg_delay[srcid].bb=clk_deduction_b(clkaa,clkbb,msg_delay_start[srcid].aa,msg_delay_start[srcid].bb);
+}
+void dot()
+{
+    for (i : int[0,nodes-1]) 
+      {
+        coll_count_dot[i]=coll_count[i];
+        coll_count[i]=0;
+        node_th_dot[i]=node_th[i];
+        node_th[i]=0;
+      }
+    chan_th_dot=chan_th;
+    chan_th=0;
+    total_coll_dot=total_coll;
+    total_coll=0;
+}
+//msg_delay[msg_array[send_packet.idd].src].aa=clk_deduction_a(clk.aa,clk.bb,msg_delay_start[msg_array[send_packet.idd].src].aa,msg_delay_start[msg_array[send_packet.idd].src].bb),
+//msg_delay[msg_array[send_packet.idd].src].bb=clk_deduction_b(clk.aa,clk.bb,msg_delay_start[msg_array[send_packet.idd].src].aa,msg_delay_start[msg_array[send_packet.idd].src].bb),
+//msg_delay[msg_array[send_packet.idd].src].aa=clk_deduction_a(clk.aa,clk.bb,msg_delay_start_ack[msg_array[send_packet.idd].src].aa,msg_delay_start_ack[msg_array[send_packet.idd].src].bb),
+//msg_delay[msg_array[send_packet.idd].src].bb=clk_deduction_b(clk.aa,clk.bb,msg_delay_start_ack[msg_array[send_packet.idd].src].aa,msg_delay_start_ack[msg_array[send_packet.idd].src].bb)</declaration>
+	<template>
+		<name x="9" y="9">MAC_Layer</name>
+		<parameter>const int id</parameter>
+		<declaration>// Place local declarations here.
+//"T" is reset after being finished because places maybe activated from different locations and the timing of other locations is not same
+//int pckt=next_packet[id];
+clock T;//timer for each node start at the end of previous packet on the channel to end of transmission of next packet on the channel or end of packet cycle; partially equal to spmGbl.idleTimerStart
+clock T_basetimer;
+clock T_trans;
+clock T_ci;
+int indx; //show type of the collided message (is it message=0 or ack message=1)</declaration>
+		<location id="id0" x="-68" y="-1445">
+			<committed/>
+		</location>
+		<location id="id1" x="1011" y="-425">
+			<committed/>
+		</location>
+		<location id="id2" x="1011" y="-875">
+			<committed/>
+		</location>
+		<location id="id3" x="271" y="-698">
+			<committed/>
+		</location>
+		<location id="id4" x="-229" y="-1164">
+		</location>
+		<location id="id5" x="493" y="-1445">
+			<committed/>
+		</location>
+		<location id="id6" x="-1070" y="-1445">
+			<committed/>
+		</location>
+		<location id="id7" x="-1785" y="-1445">
+			<name x="-1802" y="-1479">collision</name>
+			<committed/>
+		</location>
+		<location id="id8" x="1130" y="-1445">
+			<name x="1147" y="-1462">start_tx</name>
+			<label kind="invariant" x="1156" y="-1428">T&lt;max</label>
+		</location>
+		<location id="id9" x="-722" y="-1445">
+			<name x="-738" y="-1479">busy</name>
+			<label kind="invariant" x="-782" y="-1504">channel_busy!=0</label>
+		</location>
+		<location id="id10" x="272" y="-1445">
+			<name x="213" y="-1487">beta1_idle</name>
+			<label kind="invariant" x="281" y="-1470">T&lt;=b1_idle</label>
+			<label kind="comments" x="264" y="-1385">*T is used for count the expired time</label>
+		</location>
+		<location id="id11" x="765" y="-1445">
+			<name x="731" y="-1428">priority_wait</name>
+			<label kind="invariant" x="654" y="-1479">T_trans&lt;=pr[next_packet[id].idd]*b2</label>
+		</location>
+		<location id="id12" x="782" y="-875">
+			<name x="697" y="-866">random_wait</name>
+			<label kind="invariant" x="739" y="-909">T_trans&lt;=r_slot*b2</label>
+			<label kind="comments" x="773" y="-815">choose random slot with variant and guard
+
+*invariant "T&lt;=r_slot*b2" choose random delay to wait</label>
+		</location>
+		<location id="id13" x="272" y="-876">
+			<name x="179" y="-901">priority_idle</name>
+			<label kind="invariant" x="187" y="-867">T&lt;=pri_slots+b1_idle</label>
+		</location>
+		<location id="id14" x="1011" y="-688">
+			<name x="917" y="-689">random_idle</name>
+			<label kind="invariant" x="1037" y="-714">T_ci&lt;=1</label>
+			<label kind="comments" x="1002" y="-629">*altPathBit is neglected</label>
+		</location>
+		<init ref="id14"/>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id10"/>
+			<label kind="assignment" x="-25" y="-1428">b1_idle=(kind[id] ? b1_tx : b1_rx),
+pri_slots=(kind[id] ? pri_tx : pri_rx)</label>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id14"/>
+			<label kind="guard" x="671" y="-569">cycleTimerRestart[id]==false &amp;&amp; 
+cycle_timer[id]&lt;cycleTicks</label>
+			<nail x="901" y="-561"/>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id14"/>
+			<label kind="guard" x="1122" y="-569">cycleTimerRestart[id]==false &amp;&amp; 
+cycle_timer[id]&gt;=cycleTicks</label>
+			<label kind="assignment" x="1122" y="-535">decrementBL(bl[id],1),
+decrementBL(blg,1),
+cycle_timer[id]=0,
+T=0</label>
+			<label kind="comments" x="1056" y="-582">decrement backlog (page21,128):
+On idle: If a packet cycle time expires without channel activity.</label>
+			<nail x="1113" y="-561"/>
+		</transition>
+		<transition>
+			<source ref="id14"/>
+			<target ref="id1"/>
+			<label kind="guard" x="943" y="-595">T_ci&gt;=1 &amp;&amp; 
+next_packet[id].idd &lt; 0</label>
+			<label kind="assignment" x="952" y="-544">cycle_timer[id]++,
+T_ci=0</label>
+			<nail x="1011" y="-552"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id12"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id14"/>
+			<label kind="guard" x="467" y="-714">next_packet[id].idd &lt; 0</label>
+			<label kind="assignment" x="510" y="-688">T_ci=0</label>
+		</transition>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id9"/>
+			<label kind="guard" x="-1302" y="-1309">coll[next_packet[id].idd][indx]&lt;255</label>
+			<nail x="-1472" y="-1283"/>
+			<nail x="-876" y="-1283"/>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id9"/>
+			<label kind="guard" x="-943" y="-1369">kind[id]==false</label>
+			<nail x="-883" y="-1369"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id6"/>
+			<label kind="guard" x="-977" y="-1445">next_packet[id].type!=true</label>
+			<label kind="synchronisation" x="-917" y="-1462">ch_coll?</label>
+			<label kind="assignment" x="-917" y="-1428">indx=1</label>
+			<nail x="-875" y="-1445"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id4"/>
+			<label kind="guard" x="-535" y="-1045">next_packet[id].idd!=received_packet.idd</label>
+			<label kind="synchronisation" x="-433" y="-1079">ack_rec[id]?</label>
+			<nail x="-535" y="-1054"/>
+			<nail x="-229" y="-1054"/>
+		</transition>
+		<transition color="#ff00ff">
+			<source ref="id4"/>
+			<target ref="id0"/>
+			<label kind="synchronisation" x="-187" y="-1156">ch_free?</label>
+			<label kind="assignment" x="-178" y="-1139">T=0</label>
+			<label kind="comments" x="-229" y="-1115">node receiving (calculate beta1 based on that):
+
+spmGbl.beta1Ticks = spmGbl.beta1PostRxTicks;
+spmGbl.priorityIdleTicks = spmGbl.priorityChPostRxTicks;
+}
+
+       start idle timer</label>
+			<nail x="-68" y="-1164"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id4"/>
+			<label kind="guard" x="-552" y="-1156">next_packet[id].idd==received_packet.idd</label>
+			<label kind="synchronisation" x="-459" y="-1190">ack_rec[id]?</label>
+			<label kind="assignment" x="-493" y="-1139">next_packet[id].idd = -1</label>
+			<label kind="comments" x="-552" y="-1115">the ack that has received just now is for the message is in next_packet buffer, so we should flush buffer</label>
+			<nail x="-501" y="-1164"/>
+		</transition>
+		<transition color="#ff00ff">
+			<source ref="id9"/>
+			<target ref="id0"/>
+			<label kind="guard" x="-348" y="-1351">kind[id]==false</label>
+			<label kind="synchronisation" x="-331" y="-1368">ch_free?</label>
+			<label kind="assignment" x="-331" y="-1334">T=0</label>
+			<label kind="comments" x="-644" y="-1330">node receiving (calculate beta1 based on that):
+
+spmGbl.beta1Ticks = spmGbl.beta1PostRxTicks;
+spmGbl.priorityIdleTicks = spmGbl.priorityChPostRxTicks;
+}
+
+       start idle timer</label>
+			<nail x="-518" y="-1368"/>
+			<nail x="-144" y="-1368"/>
+		</transition>
+		<transition color="#ff00ff">
+			<source ref="id9"/>
+			<target ref="id0"/>
+			<label kind="guard" x="-467" y="-1258">kind[id]==true &amp;&amp; coll[next_packet[id].idd][indx]&gt;0</label>
+			<label kind="synchronisation" x="-331" y="-1275">ch_free?</label>
+			<label kind="assignment" x="-323" y="-1241">T=0</label>
+			<label kind="comments" x="-611" y="-1254">collision happened therefore node must send this packet again
+
+
+
+      node sending (calculate beta1 based on this):
+
+spmGbl.beta1Ticks = spmGbl.beta1PostTxTicks;
+spmGbl.priorityIdleTicks = spmGbl.priorityChPostTxTicks;
+
+     start idle timer</label>
+			<nail x="-510" y="-1275"/>
+			<nail x="-136" y="-1275"/>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id5"/>
+			<label kind="guard" x="314" y="-1436">T&gt;=b1_idle &amp;&amp;
+next_packet[id].idd&gt;=0</label>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id13"/>
+			<label kind="guard" x="213" y="-1173">T&gt;=b1_idle &amp;&amp;
+next_packet[id].idd&lt;0</label>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id7"/>
+			<label kind="guard" x="-1454" y="-1436">kind[id]==true</label>
+			<label kind="assignment" x="-1725" y="-1530">coll[next_packet[id].idd][indx] = coll[next_packet[id].idd][indx]+1,
+msg_array[next_packet[id].idd].coll_num[indx]=msg_array[next_packet[id].idd].coll_num[indx]+1,
+coll_count[id]++,
+incrementBL(bl[id],1),
+coll_event[id]=true</label>
+		</transition>
+		<transition>
+			<source ref="id14"/>
+			<target ref="id2"/>
+			<label kind="synchronisation" x="918" y="-850">p_ready[id]?</label>
+			<label kind="assignment" x="918" y="-833">r_slot=(bl[id]*wbase)-1,
+T_basetimer=0,
+T_trans=0</label>
+			<nail x="1011" y="-782"/>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id14"/>
+			<label kind="guard" x="1394" y="-578">cycleTimerRestart[id]==true</label>
+			<label kind="assignment" x="1394" y="-552">cycleTimerRestart[id]=false,
+cycle_timer[id]=0</label>
+			<nail x="1598" y="-501"/>
+			<nail x="1598" y="-603"/>
+		</transition>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id8"/>
+			<label kind="guard" x="1062" y="-1606">T_basetimer&gt;=wbase*b2</label>
+			<label kind="assignment" x="1079" y="-1589">decrementBL(bl[id],1),
+decrementBL(blg,1),
+T_basetimer=0</label>
+			<label kind="comments" x="1089" y="-1513">backlog decrement: (page 21)
+ On waiting to transmit: If Wbase randomising slots go by without channel activity.
+
+
+(page 127)
+spmGbl.stopped = *(spmGbl.clock);
+spmGbl.elapsed = spmGbl.stopped - spmGbl.baseTimerStart;
+if (spmGbl.elapsed &gt;= spmGbl.baseTicks)
+{
+spmGbl.baseTimerStart = spmGbl.stopped; /* restart base */
+/*timer */
+DecrementBacklog(1); /* decrement back log */
+}</label>
+			<nail x="1190" y="-1538"/>
+			<nail x="1071" y="-1538"/>
+		</transition>
+		<transition>
+			<source ref="id12"/>
+			<target ref="id12"/>
+			<label kind="guard" x="705" y="-1045">T_basetimer&gt;=wbase*b2</label>
+			<label kind="assignment" x="705" y="-1028">decrementBL(bl[id],1),
+decrementBL(blg,1),
+T_basetimer=0</label>
+			<label kind="comments" x="799" y="-900">page 127:
+*if (spmGbl.elapsed &gt;= spmGbl.baseTicks) = T_basetimer&gt;=wbase*b2
+
+
+
+decrement backlog: (page 21)
+On waiting to transmit: If Wbase randomising slots go by without channel activity.</label>
+			<nail x="850" y="-977"/>
+			<nail x="697" y="-977"/>
+		</transition>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id9"/>
+			<label kind="guard" x="-1292" y="-1241">coll[next_packet[id].idd][indx]&gt;=255</label>
+			<label kind="assignment" x="-1309" y="-1198">coll[next_packet[id].idd][indx] = -255,
+deletefromfifo(next_packet[id].idd,id,fifo),
+msg_array[next_packet[id].idd].coll_num[indx]=-255</label>
+			<nail x="-1513" y="-1215"/>
+			<nail x="-867" y="-1215"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id6"/>
+			<label kind="guard" x="-977" y="-1539">next_packet[id].type==true</label>
+			<label kind="synchronisation" x="-909" y="-1556">ch_coll?</label>
+			<label kind="assignment" x="-909" y="-1522">indx = 0</label>
+			<nail x="-883" y="-1505"/>
+		</transition>
+		<transition>
+			<source ref="id14"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="314" y="-604">ch_busy?</label>
+			<label kind="assignment" x="305" y="-570">kind[id]=false</label>
+			<label kind="comments" x="-443" y="-680">page 125:
+
+*if ((spmGbl.rf.rxFlag == 1) || (spmGbl.rf.txOn == 1)) = ch_busy?</label>
+			<nail x="841" y="-671"/>
+			<nail x="552" y="-578"/>
+			<nail x="-722" y="-578"/>
+		</transition>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id14"/>
+			<label kind="guard" x="1147" y="-807">next_packet[id].idd &lt; 0</label>
+			<label kind="assignment" x="1173" y="-790">T_ci=0</label>
+			<label kind="comments" x="833" y="-672">*if ( macGbl.tpr == FALSE) = next_packet[id]==0</label>
+			<nail x="1122" y="-688"/>
+		</transition>
+		<transition>
+			<source ref="id12"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="408" y="-960">ch_busy?</label>
+			<label kind="assignment" x="399" y="-943">kind[id]=false</label>
+			<label kind="comments" x="510" y="-876">*if ((spmGbl.rf.rxFlag == 1) || (spmGbl.rf.txOn == 1)) = ch_busy?</label>
+			<nail x="671" y="-926"/>
+			<nail x="-578" y="-926"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id12"/>
+			<label kind="guard" x="561" y="-816">next_packet[id].idd &gt;= 0</label>
+			<label kind="assignment" x="569" y="-790">r_slot=(bl[id]*wbase)-1,
+T_basetimer=0,
+T_trans=0</label>
+			<label kind="comments" x="680" y="-765">"p_ready" is synchronization channel for times when packet is ready.
+
+*spmGbl.baseTimerStart = T_basetimer
+*spmGbl.transmitTimerStart = T</label>
+			<nail x="782" y="-807"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id3"/>
+			<label kind="guard" x="68" y="-807">T&gt;=pri_slots+b1_idle &amp;&amp; 
+next_packet[id].idd &lt; 0</label>
+			<nail x="271" y="-723"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="-604" y="-900">ch_busy?</label>
+			<label kind="assignment" x="-629" y="-875">kind[id]=false</label>
+			<label kind="comments" x="-629" y="-849">page 124:
+
+*if ((spmGbl.rf.rxFlag == 1) ||
+(spmGbl.rf.txOn == 1)) = ch_busy?
+
+*altPathBit is neglected</label>
+			<nail x="-646" y="-875"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id12"/>
+			<label kind="guard" x="365" y="-875">T&gt;=pri_slots+b1_idle &amp;&amp; 
+next_packet[id].idd &gt;= 0</label>
+			<label kind="assignment" x="365" y="-841">r_slot=(bl[id]*wbase)-1,
+T_trans=0,
+T_basetimer=0</label>
+			<label kind="comments" x="289" y="-850">*spmGbl.baseTimerStart = T_basetimer
+*spmGbl.transmitTimerStart = T
+*r_slot=  random slot between 0 and backlog * wbase - 1
+T_trans is equal to spmGbl.transmitTimerStart</label>
+		</transition>
+		<transition>
+			<source ref="id12"/>
+			<target ref="id8"/>
+			<label kind="guard" x="824" y="-1190">T_trans&gt;=0 &amp;&amp; channel_busy!=1</label>
+			<label kind="synchronisation" x="994" y="-1215">transmit!</label>
+			<label kind="assignment" x="824" y="-1164">send_packet.idd=next_packet[id].idd,
+send_packet.type=next_packet[id].type,
+flag++,
+kind[id]=true,
+T=0</label>
+			<label kind="comments" x="705" y="-1283">"send_packet" is global variable. it is sending packet on the channel.</label>
+			<nail x="1028" y="-1096"/>
+		</transition>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id13"/>
+			<label kind="guard" x="501" y="-1300">pr[next_packet[id].idd]==0 ||
+coll[next_packet[id].idd][indx]&gt;1 ||
+kind[id]==true</label>
+			<nail x="493" y="-1198"/>
+		</transition>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="816" y="-1598">ch_busy?</label>
+			<label kind="comments" x="731" y="-1521">*if ((spmGbl.rf.rxFlag == 1) || (spmGbl.rf.txOn == 1)) = ch_busy?</label>
+			<nail x="808" y="-1658"/>
+			<nail x="-416" y="-1657"/>
+		</transition>
+		<transition>
+			<source ref="id11"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="230" y="-1624">ch_busy?</label>
+			<label kind="assignment" x="213" y="-1607">kind[id]=false</label>
+			<label kind="comments" x="493" y="-1487">*if ((spmGbl.rf.rxFlag == 1) || (spmGbl.rf.txOn == 1)) = ch_busy?</label>
+			<nail x="493" y="-1624"/>
+			<nail x="-408" y="-1623"/>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="-348" y="-1555">ch_busy?</label>
+			<label kind="assignment" x="-357" y="-1538">kind[id]=false</label>
+			<label kind="comments" x="-111" y="-1487">page 123:
+*if ((spmGbl.rf.rxFlag == 1) ||
+(spmGbl.rf.txOn == 1)) = ch_busy?
+
+*altPathBit is neglected</label>
+			<nail x="-153" y="-1521"/>
+			<nail x="-501" y="-1521"/>
+		</transition>
+		<transition>
+			<source ref="id11"/>
+			<target ref="id8"/>
+			<label kind="guard" x="824" y="-1445">T_trans&gt;=pr[next_packet[id].idd]*b2</label>
+			<label kind="synchronisation" x="909" y="-1462">transmit!</label>
+			<label kind="assignment" x="918" y="-1428">flag++,
+kind[id]=true,
+T=0</label>
+			<label kind="comments" x="715" y="-1420">"flag" is used to show how many nodes are trying to send in channel in this packet sycle</label>
+		</transition>
+		<transition color="#ff00ff">
+			<source ref="id5"/>
+			<target ref="id11"/>
+			<label kind="guard" x="510" y="-1436">pr[next_packet[id].idd]&gt;=1 &amp;&amp;
+kind[id]==false &amp;&amp;
+coll[next_packet[id].idd][indx]&lt;=1</label>
+			<label kind="assignment" x="510" y="-1385">T_trans=0</label>
+			<label kind="comments" x="263" y="-1436">"pr[packet]" is priority of the message with "packet" id.
+
+"next_packet[id]" is the id of message must be transmit with this node.
+
+different messages with different ids and different priority can be sent by this node
+
+
+
+
+/* idle timer expired */
+/* check if transmit packet is still ready and
+set priority access type */
+/* conditions for priority access
+Packet marked as priority
+Collisions less than 2
+Node has a priority slot
+Only after received packet
+                         only after valid crc on last received pkt
+*/
+if ( (macGbl.tpr == TRUE) &amp;&amp;
+(macGbl.priorityPkt == TRUE) &amp;&amp;
+(spmGbl.kind == POST_RX) &amp;&amp; /* only after
+ rx */
+(spmGbl.collisionsThisPkt &lt;= 1) &amp;&amp;
+(spmGbl.nodePriority &gt; 0) &amp;&amp;
+
+
+                  spmGbl.transmitTimerStart</label>
+		</transition>
+		<transition color="#ff00ff">
+			<source ref="id9"/>
+			<target ref="id0"/>
+			<label kind="guard" x="-493" y="-1462">kind[id]==true &amp;&amp; coll[next_packet[id].idd][indx]&lt;=0</label>
+			<label kind="synchronisation" x="-357" y="-1479">ch_free?</label>
+			<label kind="assignment" x="-374" y="-1445">next_packet[id].idd = -1,
+T=0</label>
+			<label kind="comments" x="-561" y="-1419">page 122 of standard:
+
+*if ((spmGbl.rf.rxFlag == 0) &amp;&amp;
+(spmGbl.rf.txOn == 0)) = ch_free?
+
+*beta1 duration is constant
+
+*altPathBit flags is neglected
+
+
+*flush next_packet when :
+     1.next_packet has been sent
+
+(next_packet[id].idd==send_packet.idd and next_packet[id].type==send_packet.type)
+
+     or
+
+     2.ack packet of peresent           next_packet has been             received
+
+(next_packet[id].idd==received_packet.idd and received_packet.type==false and send_packet.type==true)
+
+
+
+      node sending (calculate beta1 based on this):
+
+spmGbl.beta1Ticks = spmGbl.beta1PostTxTicks;
+spmGbl.priorityIdleTicks = spmGbl.priorityChPostTxTicks;
+
+     start idle timer
+      spmGbl.idleTimerStart;</label>
+			<nail x="-331" y="-1445"/>
+		</transition>
+	</template>
+	<template>
+		<name>channel</name>
+		<declaration>clock T;
+//msg_recev? channel will show valid CRC messages recevied in receiver nodes
+// it is supposed that message will be in one situation:
+//1.collision
+//2.disrupt (all node receive it corrupted)
+//3.succussful (all node receive it succussfully)- because it is supposed that disruption is because of channel and nodes works properly all the time and there is no situation that one node receive massage disrupted and one node receive it succussfully</declaration>
+		<location id="id15" x="272" y="51">
+			<label kind="invariant" x="246" y="59">T&lt;=coll_max</label>
+		</location>
+		<location id="id16" x="-1198" y="51">
+			<name x="-1206" y="17">busy2</name>
+			<urgent/>
+		</location>
+		<location id="id17" x="-671" y="-187">
+			<label kind="comments" x="-680" y="-128">channel is broken down and packet have lost
+
+
+it's urgent because before ch_free channel activates other relevant channel in committed location activate and do their task</label>
+			<urgent/>
+		</location>
+		<location id="id18" x="-781" y="-255">
+			<label kind="comments" x="-790" y="-195">it's urgent because before ch_free channel activates other relevant channel in committed location activate and do their task</label>
+			<urgent/>
+		</location>
+		<location id="id19" x="366" y="-85">
+			<name x="315" y="-119">transmission_start</name>
+			<label kind="invariant" x="383" y="-93">T&lt;=tx_max</label>
+		</location>
+		<location id="id20" x="612" y="51">
+			<name x="604" y="17">collision</name>
+			<urgent/>
+		</location>
+		<location id="id21" x="153" y="51">
+			<name x="119" y="17">busy1</name>
+			<label kind="invariant" x="102" y="60">T&lt;=t_frame</label>
+		</location>
+		<location id="id22" x="459" y="-204">
+			<name x="450" y="-238">idle</name>
+		</location>
+		<branchpoint id="id23" x="-1002" y="51">
+		</branchpoint>
+		<init ref="id22"/>
+		<transition>
+			<source ref="id15"/>
+			<target ref="id21"/>
+			<label kind="guard" x="187" y="25">flag&lt;=1</label>
+		</transition>
+		<transition>
+			<source ref="id23"/>
+			<target ref="id16"/>
+			<label kind="probability" x="-1036" y="34">100</label>
+		</transition>
+		<transition>
+			<source ref="id23"/>
+			<target ref="id17"/>
+			<label kind="assignment" x="-798" y="-93">flag=0</label>
+			<label kind="comments" x="-695" y="21">because backlog is global incrementBL is embedded here
+revision =&gt; because it is not a good idead to think that all nodes all this very much syncronised that they all work coordinately and so decreasing specially will be chaneged coincideingly (because increment will occur in transmission and this will happen through all the channel and it can be supposed globally but decrementaion will occur by each node seperately and supposing that all nodes always are in the synchronisation and all of them update BL paralelly is very simple)</label>
+			<label kind="probability" x="-985" y="25">0</label>
+		</transition>
+		<transition>
+			<source ref="id21"/>
+			<target ref="id23"/>
+			<label kind="guard" x="-544" y="0">flag&lt;=1 &amp;&amp; T&gt;=t_frame</label>
+			<label kind="synchronisation" x="-518" y="25">packet_sent!</label>
+			<label kind="assignment" x="-969" y="68">chan_th++,
+node_th[msg_array[send_packet.idd].src]=(send_packet.type ? node_th[msg_array[send_packet.idd].src]+1 : node_th[msg_array[send_packet.idd].src]),
+incrementBL(blg,delta)</label>
+			<label kind="comments" x="-416" y="77">send_packet is acknowledge and there is no need to calculate the delay
+
+
+
+//in revision:
+*channel throughput is the message and acknowlege message throughput (total) on channel
+*end to end delay is delay of sending message or acknowledge on channel
+
+
+//packet_sent? channel must be omitted from here if sender channel knows about disruption and it would like to update backlog and cycleTimetRestart and other variables only when there is no disruption</label>
+		</transition>
+		<transition>
+			<source ref="id17"/>
+			<target ref="id22"/>
+			<label kind="synchronisation" x="77" y="-178">ch_free!</label>
+			<label kind="assignment" x="77" y="-161">send_packet.idd=-255,
+send_packet.type=false,
+channel_busy=0</label>
+			<label kind="comments" x="-262" y="-106">this edge shows that this message is not received well because of channel disruption, noise, attenuation etc and packet has been lost.
+nodes will notice by corrupt CRC and they discard message and don't anything else, so in this model checking CRC by nodes is not modeld but messages that cause invalid CRC are modeled because they inject traffic load.</label>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id22"/>
+			<label kind="synchronisation" x="119" y="-323">ch_free!</label>
+			<label kind="assignment" x="119" y="-306">send_packet.idd=-255,
+send_packet.type=false,
+channel_busy=0</label>
+		</transition>
+		<transition>
+			<source ref="id19"/>
+			<target ref="id15"/>
+			<label kind="synchronisation" x="264" y="-59">ch_busy!</label>
+			<label kind="assignment" x="264" y="-34">channel_busy=1,
+T=0</label>
+		</transition>
+		<transition>
+			<source ref="id15"/>
+			<target ref="id20"/>
+			<label kind="guard" x="417" y="25">flag&gt;1</label>
+			<label kind="synchronisation" x="425" y="59">ch_coll!</label>
+			<label kind="assignment" x="425" y="76">total_coll++,
+incrementBL(blg,1)</label>
+		</transition>
+		<transition>
+			<source ref="id20"/>
+			<target ref="id22"/>
+			<label kind="synchronisation" x="553" y="-136">ch_free!</label>
+			<label kind="assignment" x="553" y="-110">channel_busy=0,
+flag=0,
+send_packet.idd=-255,
+send_packet.type=false</label>
+		</transition>
+		<transition>
+			<source ref="id16"/>
+			<target ref="id18"/>
+			<label kind="synchronisation" x="-1198" y="-238">msg_recev!</label>
+			<label kind="assignment" x="-1198" y="-187">received_packet.type=send_packet.type,
+received_packet.idd=send_packet.idd,
+flag=0</label>
+			<label kind="comments" x="-509" y="-59">"ids[]" show which message have just sent.
+
+because the globality of "BL" in this model backlog flag that shows when there is needed to update "BL" is updated in channel model.
+
+
+delta is constant for all packets and in positive and in declaration section
+
+*it supposed that CRC is always valid (in this edge) and also cycletimerrestart does not need to be restart in valid CRC
+
+
+//packet_sent? channel must be added in here if sender channel knows about disruption and it would like to update backlog and cycleTimetRestart and other variables only when there is no disruption and message is sent successfuly
+
+
+because backlog is global incrementBL is embedded here
+/ revision =&gt; look at to right adjacent edge comment
+
+received_packet is buffer of receiver nodes through channel that shows this message is received successfully and CRC is valid also; because this model uses broadcast channel, if messages don't collide and they are sent successfully through channel it is presumed that all nodes will get this message successfully, because in our model cause of message lost are collision or channel disruption and if they are not occurred all nodes will get message successfully (disruption in the node side are not considered)</label>
+		</transition>
+		<transition>
+			<source ref="id22"/>
+			<target ref="id19"/>
+			<label kind="guard" x="374" y="-161">T&gt;=0</label>
+			<label kind="synchronisation" x="366" y="-178">transmit?</label>
+			<label kind="assignment" x="374" y="-144">T=0</label>
+		</transition>
+	</template>
+	<template>
+		<name>msg_consumer</name>
+		<parameter>const int id</parameter>
+		<declaration>//msg_consumer is in application or top layer of MAC layer. it works as a polling system, when MAC Layer sending buffer (next_packet[]) is empty fill it with messages or ack messages exist in FIFOs (fifo and fifo_ack)
+int i=0;
+clock T;
+int f_ack,f_msg;</declaration>
+		<location id="id24" x="-170" y="-153">
+			<urgent/>
+		</location>
+		<location id="id25" x="-170" y="-374">
+			<name x="-180" y="-408">idle</name>
+			<label kind="invariant" x="-187" y="-425">T&lt;jitter</label>
+		</location>
+		<init ref="id25"/>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id25"/>
+			<label kind="guard" x="467" y="-365">f_ack==-1 &amp;&amp; f_msg!=-1</label>
+			<label kind="synchronisation" x="467" y="-339">p_ready[id]!</label>
+			<label kind="assignment" x="467" y="-314">next_packet[id].idd=f_msg,
+next_packet[id].type=true,
+T=0,
+msg_delay_start[id].aa=clk.aa,
+msg_delay_start[id].bb=clk.bb</label>
+			<label kind="comments" x="-42" y="-102">"msg_delay_start[id]" show the time when a message from node "id" has been given to MAC layer</label>
+			<nail x="450" y="-110"/>
+			<nail x="450" y="-416"/>
+		</transition>
+		<transition>
+			<source ref="id25"/>
+			<target ref="id25"/>
+			<label kind="guard" x="-374" y="-493">T&gt;0 &amp;&amp; (next_packet[id].idd != -1 || fifo_numbers[id]==0)</label>
+			<label kind="assignment" x="-204" y="-476">T=0</label>
+			<nail x="-69" y="-454"/>
+			<nail x="-273" y="-454"/>
+		</transition>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id25"/>
+			<label kind="guard" x="-654" y="-306">f_ack==-1 &amp;&amp; f_msg==-1</label>
+			<label kind="assignment" x="-528" y="-280">T=0</label>
+			<nail x="-476" y="-195"/>
+			<nail x="-476" y="-340"/>
+		</transition>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id25"/>
+			<label kind="guard" x="153" y="-323">f_ack!=-1</label>
+			<label kind="synchronisation" x="153" y="-297">p_ready[id]!</label>
+			<label kind="assignment" x="153" y="-272">next_packet[id].idd=f_ack,
+next_packet[id].type=false,
+msg_delay_start_ack[id].aa=clk.aa,
+msg_delay_start_ack[id].bb=clk.bb,
+T=0</label>
+			<nail x="144" y="-187"/>
+			<nail x="144" y="-348"/>
+		</transition>
+		<transition>
+			<source ref="id25"/>
+			<target ref="id24"/>
+			<label kind="guard" x="-331" y="-331">next_packet[id].idd == -1 &amp;&amp; fifo_numbers[id]&gt;0</label>
+			<label kind="assignment" x="-323" y="-306">f_ack=firstack(id,fifo_ack),
+f_msg=firstmsg(id,clk.aa,clk.bb,fifo,msg_array),
+i=0</label>
+		</transition>
+	</template>
+	<template>
+		<name>msg_generator</name>
+		<parameter>const int id, const int mean</parameter>
+		<declaration>//it's a model in app layer that generates random messages for nodes and put them to related FIFOs
+int i=0;
+int j=0; // "j" is random number generated to send message from "src" to "dest", actually "j" is destination
+bool flag=false;</declaration>
+		<location id="id26" x="-17" y="-76">
+			<committed/>
+		</location>
+		<location id="id27" x="306" y="-76">
+			<name x="306" y="-110">r_n</name>
+			<committed/>
+		</location>
+		<location id="id28" x="-195" y="-76">
+			<committed/>
+		</location>
+		<location id="id29" x="-450" y="-76">
+			<committed/>
+		</location>
+		<location id="id30" x="110" y="-76">
+			<name x="68" y="-110">random_dest</name>
+			<committed/>
+		</location>
+		<location id="id31" x="552" y="-76">
+			<committed/>
+		</location>
+		<location id="id32" x="-246" y="-280">
+			<name x="-280" y="-314">end</name>
+		</location>
+		<location id="id33" x="76" y="-280">
+			<name x="66" y="-314">idle</name>
+			<label kind="exponentialrate" x="101" y="-297">1:(mean/ratio)</label>
+			<label kind="comments" x="66" y="-221">// ...:... (for example1:1331) is the lambda (λ) in exponential distribution and the mean time between each message generation in each node is 1/lambda (for example 1331)</label>
+		</location>
+		<init ref="id33"/>
+		<transition>
+			<source ref="id26"/>
+			<target ref="id30"/>
+			<label kind="select" x="-8" y="-68">i : int[0,nodes-1]</label>
+			<label kind="assignment" x="34" y="-51">j=i</label>
+		</transition>
+		<transition>
+			<source ref="id30"/>
+			<target ref="id27"/>
+			<label kind="guard" x="204" y="0">j!=id</label>
+			<nail x="153" y="-8"/>
+			<nail x="272" y="-8"/>
+		</transition>
+		<transition>
+			<source ref="id30"/>
+			<target ref="id27"/>
+			<label kind="guard" x="119" y="-170">id==nodes-1 &amp;&amp; j==id</label>
+			<label kind="assignment" x="170" y="-153">j = j-1</label>
+			<nail x="144" y="-136"/>
+			<nail x="272" y="-136"/>
+		</transition>
+		<transition>
+			<source ref="id27"/>
+			<target ref="id31"/>
+			<label kind="assignment" x="340" y="-68">msg_array[packet].src=id,
+msg_array[packet].dest=j,
+msg_array[packet].time[0]=-1,
+msg_array[packet].time[1]=-1</label>
+		</transition>
+		<transition>
+			<source ref="id28"/>
+			<target ref="id33"/>
+			<label kind="guard" x="-68" y="-204">flag==false</label>
+			<label kind="assignment" x="-68" y="-178">packet++</label>
+		</transition>
+		<transition>
+			<source ref="id28"/>
+			<target ref="id26"/>
+			<label kind="guard" x="-144" y="-76">flag==true</label>
+			<label kind="assignment" x="-170" y="-59">fifo_numbers[id]++</label>
+		</transition>
+		<transition>
+			<source ref="id29"/>
+			<target ref="id28"/>
+			<label kind="assignment" x="-416" y="-68">flag=addtofifo(packet,id,fifo)</label>
+			<label kind="comments" x="-24" y="25">destination of message can not be equal to source</label>
+		</transition>
+		<transition>
+			<source ref="id31"/>
+			<target ref="id33"/>
+			<label kind="assignment" x="212" y="-246">packet++</label>
+		</transition>
+		<transition>
+			<source ref="id33"/>
+			<target ref="id32"/>
+			<label kind="guard" x="-204" y="-306">packet&gt;=packet_numbers</label>
+		</transition>
+		<transition>
+			<source ref="id30"/>
+			<target ref="id27"/>
+			<label kind="guard" x="127" y="-76">id!=nodes-1 &amp;&amp; j==id</label>
+			<label kind="assignment" x="178" y="-59">j = j+1</label>
+			<label kind="comments" x="138" y="25">msg_array[].time=-1 shows that message has not been sent yet</label>
+		</transition>
+		<transition>
+			<source ref="id33"/>
+			<target ref="id29"/>
+			<label kind="guard" x="-280" y="-221">packet&lt;packet_numbers</label>
+			<label kind="assignment" x="-272" y="-204">j=0,
+flag=false</label>
+		</transition>
+	</template>
+	<template>
+		<name>msg_management</name>
+		<parameter>const int id</parameter>
+		<declaration>//it's a model in app layer, handle updating relevant registers and FIFOs of nodes in case of sending messages or receiving its own messages that their destinations are equal to this node
+bool flag;
+clock T;
+//based on standard transmitter nodes only have the ability to find collision and succussful transmission is transmission without collision
+// but in our model transmission can also be disrupted by disrupted channel and we suppose tranmitter node won't perceive if their transmission is failed because of disrupted channel
+//because if we had presumed that there was no need for acknowledge messages and CRC because transmitter node will know if their transmission was done correct or not
+//so :
+//1.collision will be detect only by transmitter nodes
+//2.disrupt transmission will not be detected by any nodes; they only will be detected by receiver nodes by CRC checking (but because there have no effects on our simulation results - no change in any parameter- we neglect that)
+//2.1 disrupt transmission will assumed as succussful transmission in transmitter nodes
+//3.all nodes except transmitter node will be receiver node and receive the message and if its CRC was ok they update relevant parameters
+</declaration>
+		<location id="id34" x="-663" y="85">
+			<label kind="invariant" x="-680" y="35">T&lt;jitter</label>
+		</location>
+		<location id="id35" x="280" y="-629">
+			<committed/>
+		</location>
+		<location id="id36" x="255" y="76">
+			<committed/>
+		</location>
+		<location id="id37" x="-434" y="85">
+			<committed/>
+		</location>
+		<location id="id38" x="586" y="76">
+			<label kind="invariant" x="576" y="93">T&lt;jitter</label>
+			<label kind="comments" x="576" y="135">it's normal location because there is no rash to reset received_packet register and msg_array[] index crush in simulation run time (because of out of range error)</label>
+		</location>
+		<location id="id39" x="-76" y="-841">
+			<committed/>
+		</location>
+		<location id="id40" x="-68" y="-102">
+			<committed/>
+		</location>
+		<location id="id41" x="-68" y="-424">
+			<name x="-68" y="-467">a</name>
+		</location>
+		<init ref="id41"/>
+		<transition>
+			<source ref="id37"/>
+			<target ref="id34"/>
+			<label kind="guard" x="-587" y="136">flag==false</label>
+			<label kind="assignment" x="-587" y="153">T=0</label>
+			<nail x="-511" y="127"/>
+			<nail x="-587" y="128"/>
+		</transition>
+		<transition>
+			<source ref="id37"/>
+			<target ref="id34"/>
+			<label kind="guard" x="-596" y="-17">flag==true</label>
+			<label kind="assignment" x="-596" y="8">fifo_numbers[id]--,
+T=0</label>
+			<nail x="-519" y="42"/>
+			<nail x="-587" y="42"/>
+		</transition>
+		<transition>
+			<source ref="id35"/>
+			<target ref="id39"/>
+			<label kind="guard" x="238" y="-748">flag==true</label>
+			<label kind="assignment" x="238" y="-722">fifo_numbers[id]--</label>
+			<nail x="229" y="-714"/>
+		</transition>
+		<transition>
+			<source ref="id35"/>
+			<target ref="id39"/>
+			<label kind="guard" x="119" y="-654">flag==false</label>
+			<nail x="136" y="-654"/>
+		</transition>
+		<transition>
+			<source ref="id36"/>
+			<target ref="id38"/>
+			<label kind="guard" x="374" y="127">flag==false</label>
+			<label kind="assignment" x="382" y="144">T=0</label>
+			<nail x="357" y="127"/>
+			<nail x="484" y="127"/>
+		</transition>
+		<transition>
+			<source ref="id36"/>
+			<target ref="id38"/>
+			<label kind="guard" x="365" y="17">flag==true</label>
+			<label kind="assignment" x="365" y="42">fifo_numbers[id]++,
+T=0</label>
+			<nail x="357" y="34"/>
+			<nail x="476" y="34"/>
+		</transition>
+		<transition>
+			<source ref="id41"/>
+			<target ref="id39"/>
+			<label kind="guard" x="-357" y="-629">next_packet[id].idd!=send_packet.idd || 
+next_packet[id].type!=send_packet.type</label>
+			<label kind="synchronisation" x="-297" y="-654">packet_sent?</label>
+			<nail x="-204" y="-629"/>
+		</transition>
+		<transition>
+			<source ref="id40"/>
+			<target ref="id41"/>
+			<label kind="guard" x="-646" y="-136">msg_array[received_packet.idd].src!=id &amp;&amp; 
+msg_array[received_packet.idd].dest!=id</label>
+			<nail x="-527" y="-170"/>
+			<nail x="-527" y="-323"/>
+		</transition>
+		<transition>
+			<source ref="id40"/>
+			<target ref="id41"/>
+			<label kind="guard" x="59" y="-280">msg_array[received_packet.idd].dest!=id &amp;&amp; 
+received_packet.type==true</label>
+			<nail x="144" y="-178"/>
+			<nail x="144" y="-314"/>
+		</transition>
+		<transition>
+			<source ref="id41"/>
+			<target ref="id35"/>
+			<label kind="guard" x="289" y="-569">next_packet[id].idd==send_packet.idd &amp;&amp; next_packet[id].type==send_packet.type &amp;&amp; send_packet.type==false</label>
+			<label kind="synchronisation" x="289" y="-586">packet_sent?</label>
+			<label kind="assignment" x="289" y="-544">flag=deletefromfifo(next_packet[id].idd, id, fifo_ack),
+coll[next_packet[id].idd][0]=(next_packet[id].type==true ? 0:coll[next_packet[id].idd][0]),
+coll[next_packet[id].idd][1]=(next_packet[id].type==false ? 0:coll[next_packet[id].idd][1]),
+cycleTimerRestart[id]=true,
+incrementBL(bl[id],delta)</label>
+			<label kind="comments" x="-50" y="-429">sender of ack of message with source and destination
+
+sender id of ack message = destination id of message
+
+
+cycleTimerRestart[msg_array[send_packet.idd].src]=true 
+
+==
+
+
+cycleTimerRestart[id]=true
+
+//if backlog would like to update locally 
+incrementBL(delta)
+must be added to this edge</label>
+			<nail x="280" y="-484"/>
+		</transition>
+		<transition>
+			<source ref="id40"/>
+			<target ref="id41"/>
+			<label kind="guard" x="-459" y="-289">msg_array[received_packet.idd].src!=id &amp;&amp; 
+received_packet.type==false</label>
+			<nail x="-323" y="-178"/>
+			<nail x="-323" y="-323"/>
+		</transition>
+		<transition>
+			<source ref="id38"/>
+			<target ref="id41"/>
+			<label kind="assignment" x="663" y="-153">received_packet.idd=-1,
+received_packet.type=false</label>
+			<label kind="comments" x="358" y="101">receiver of  message with sorce and destination
+
+receiver id of message = destination id of message</label>
+			<nail x="654" y="76"/>
+			<nail x="654" y="-331"/>
+		</transition>
+		<transition>
+			<source ref="id34"/>
+			<target ref="id41"/>
+			<label kind="assignment" x="-919" y="-68">received_packet.idd=-1,
+received_packet.type=false</label>
+			<nail x="-714" y="85"/>
+			<nail x="-714" y="-340"/>
+		</transition>
+		<transition>
+			<source ref="id39"/>
+			<target ref="id41"/>
+			<nail x="51" y="-629"/>
+		</transition>
+		<transition>
+			<source ref="id40"/>
+			<target ref="id37"/>
+			<label kind="guard" x="-358" y="8">msg_array[received_packet.idd].src==id &amp;&amp; 
+received_packet.type==false</label>
+			<label kind="synchronisation" x="-358" y="51">ack_rec[id]!</label>
+			<label kind="assignment" x="-358" y="76">flag=deletefromfifo(received_packet.idd,id,fifo),
+msg_array[received_packet.idd].ack_rec=true,
+m_d(msg_array[received_packet.idd].src,clk.aa,clk.bb)</label>
+			<label kind="comments" x="-339" y="-43">receiver of ack of message with sorce and destination
+
+receiver id of ack message = source id of message
+
+//if backlog would like to update locally 
+incrementBL(delta)
+must be added to this edge
+
+
+md() will update the message delay of each node as msg_delay[node] from start of queueing msg to fifo to receiving ack from receiver</label>
+		</transition>
+		<transition>
+			<source ref="id40"/>
+			<target ref="id36"/>
+			<label kind="guard" x="102" y="-85">msg_array[received_packet.idd].dest==id &amp;&amp; 
+received_packet.type==true</label>
+			<label kind="assignment" x="102" y="-51">flag=addtofifo(received_packet.idd,id,fifo_ack),
+msg_array[received_packet.idd].rec_cnt++</label>
+			<label kind="comments" x="-50" y="-43">cycleTimerRestart[id] will get true in receiving valid messages
+
+//if backlog would like to update locally 
+incrementBL(delta)
+must be added to this edge</label>
+		</transition>
+		<transition>
+			<source ref="id41"/>
+			<target ref="id39"/>
+			<label kind="guard" x="-765" y="-646">next_packet[id].idd==send_packet.idd &amp;&amp; 
+next_packet[id].type==send_packet.type &amp;&amp; 
+send_packet.type==true</label>
+			<label kind="synchronisation" x="-518" y="-671">packet_sent?</label>
+			<label kind="assignment" x="-765" y="-586">msg_array[next_packet[id].idd].time[0]=clk.aa,
+msg_array[next_packet[id].idd].time[1]=clk.bb,
+msg_array[next_packet[id].idd].sent=true,
+msg_array[next_packet[id].idd].send_cnt++,
+coll[next_packet[id].idd][0]=(next_packet[id].type==true ? 0:coll[next_packet[id].idd][0]),
+coll[next_packet[id].idd][1]=(next_packet[id].type==false ? 0:coll[next_packet[id].idd][1]),
+cycleTimerRestart[id]=true,
+incrementBL(bl[id],delta)</label>
+			<label kind="comments" x="-169" y="-433">sender of  message with source and destination;
+
+
+cycleTimerRestart[msg_array[send_packet.idd].src]=true 
+
+==
+
+
+cycleTimerRestart[id]=true
+
+//if backlog would like to update locally 
+incrementBL(delta)
+must be added to this edge</label>
+			<nail x="-425" y="-518"/>
+			<nail x="-425" y="-671"/>
+		</transition>
+		<transition>
+			<source ref="id41"/>
+			<target ref="id40"/>
+			<label kind="synchronisation" x="-102" y="-238">msg_recev?</label>
+			<label kind="assignment" x="-153" y="-212">cycleTimerRestart[id]=true,
+incrementBL(bl[id],delta)</label>
+		</transition>
+	</template>
+	<template>
+		<name>initializer</name>
+		<declaration>//initialize registers in start of running</declaration>
+		<location id="id42" x="-76" y="34">
+			<name x="-86" y="0">end</name>
+		</location>
+		<location id="id43" x="-76" y="-76">
+			<name x="-86" y="-110">start</name>
+			<committed/>
+		</location>
+		<init ref="id43"/>
+		<transition>
+			<source ref="id43"/>
+			<target ref="id42"/>
+			<label kind="assignment" x="-59" y="-42">initialize()</label>
+		</transition>
+	</template>
+	<template>
+		<name>global_clock</name>
+		<declaration>//is a global clock
+clock T;</declaration>
+		<location id="id44" x="-136" y="0">
+			<committed/>
+		</location>
+		<location id="id45" x="0" y="0">
+			<label kind="invariant" x="-10" y="17">T&lt;=1</label>
+		</location>
+		<init ref="id45"/>
+		<transition>
+			<source ref="id44"/>
+			<target ref="id45"/>
+			<label kind="guard" x="-119" y="-263">clk.bb&gt;=32767</label>
+			<label kind="assignment" x="-110" y="-238">clk.bb=0,
+clk.aa++,
+T=0</label>
+			<nail x="-195" y="-187"/>
+			<nail x="51" y="-187"/>
+		</transition>
+		<transition>
+			<source ref="id44"/>
+			<target ref="id45"/>
+			<label kind="guard" x="-110" y="-110">clk.bb&lt;32767</label>
+			<label kind="assignment" x="-93" y="-93">T=0,
+clk.bb++</label>
+			<nail x="-93" y="-59"/>
+			<nail x="-34" y="-59"/>
+		</transition>
+		<transition>
+			<source ref="id45"/>
+			<target ref="id44"/>
+			<label kind="guard" x="-76" y="0">T&gt;=1</label>
+		</transition>
+	</template>
+	<template>
+		<name>dot_timer</name>
+		<parameter>const int show</parameter>
+		<declaration>//update some variables that need to be ploted in 1 second ratio. it means "_dot" variables present th amount of that relevant plain variable changed in previous second (or other constant ratio which will be set) 
+//id parameter determine, which node we like to show its collision
+//plot show=79872 is equal to bit data rate of channel (each bit data rate of channel equal to one second in our model)
+clock T;</declaration>
+		<location id="id46" x="-187" y="0">
+			<committed/>
+		</location>
+		<location id="id47" x="-25" y="0">
+			<label kind="invariant" x="8" y="0">T&lt;=(show/ratio)</label>
+			<label kind="comments" x="-35" y="59">"plot_show" is 10 percent of data_rate_in_bit</label>
+		</location>
+		<init ref="id47"/>
+		<transition>
+			<source ref="id46"/>
+			<target ref="id47"/>
+			<label kind="assignment" x="-119" y="-136">dot(),
+T=0</label>
+			<nail x="-170" y="-93"/>
+			<nail x="-42" y="-93"/>
+		</transition>
+		<transition>
+			<source ref="id47"/>
+			<target ref="id46"/>
+			<label kind="guard" x="-153" y="17">T&gt;=(show/ratio)</label>
+		</transition>
+	</template>
+	<system>// Place template instantiations here.
+//data rate of the channel will show how much each bit in report plot equal to seconds in respect to ratio constant parameter (for exampe for 79872 bit per second channel each bit in report plots is equal to 100/79872 or 798.72 bit is equal to one second with the ratio of 100)
+initprocess = initializer();
+node0 = MAC_Layer(0);
+consumer0 = msg_consumer(0);
+generator0 = msg_generator(0,1331);
+mng0=msg_management(0);
+//random_idle_clk0=random_idle_clk(0);
+
+node1 = MAC_Layer(1);
+consumer1 = msg_consumer(1);
+generator1 = msg_generator(1,1331);
+mng1=msg_management(1);
+//random_idle_clk1=random_idle_clk(1);
+
+node2 = MAC_Layer(2);
+consumer2 = msg_consumer(2);
+generator2 = msg_generator(2,1331);
+mng2=msg_management(2);
+//random_idle_clk2=random_idle_clk(2);
+
+node3 = MAC_Layer(3);
+consumer3 = msg_consumer(3);
+generator3 = msg_generator(3,1331);
+mng3=msg_management(3);
+//random_idle_clk3=random_idle_clk(3);
+
+node4 = MAC_Layer(4);
+consumer4 = msg_consumer(4);
+generator4 = msg_generator(4,1331);
+mng4=msg_management(4);
+//random_idle_clk4=random_idle_clk(4);
+
+node5 = MAC_Layer(5);
+consumer5 = msg_consumer(5);
+generator5 = msg_generator(5,1331);
+mng5=msg_management(5);
+//random_idle_clk5=random_idle_clk(5);
+
+g_clock=global_clock();
+chann = channel();
+d_timer=dot_timer(79872); // 79872 is the bit rate and we want to observe some variables changes in each 79872 bit or each one second
+// List one or more processes to be composed into a system.
+
+
+system initializer, chann, g_clock,d_timer,
+node0, consumer0 ,generator0,mng0,
+//random_idle_clk0,
+node1, consumer1 ,generator1,mng1,
+//random_idle_clk1, 
+node2, consumer2 ,generator2,mng2,
+//random_idle_clk2,
+node3, consumer3 ,generator3,mng3,
+//random_idle_clk3, 
+node4, consumer4 ,generator4,mng4,
+//random_idle_clk4, 
+node5, consumer5 ,generator5,mng5;
+//random_idle_clk5;
+</system>
+	<queries>
+		<query>
+			<formula>A[] not deadlock
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>simulate 1  [&lt;=70000] {msg_delay[0].bb,msg_delay[1].bb,msg_delay[2].bb,msg_delay[3].bb,msg_delay[4].bb,msg_delay[5].bb,coll_count_dot[0],coll_count_dot[1],coll_count_dot[2],coll_count_dot[3],coll_count_dot[4],coll_count_dot[5],node_th_dot[0],node_th_dot[1],node_th_dot[2],node_th_dot[3],node_th_dot[4],node_th_dot[5],bl[0],bl[1],bl[2],bl[3],bl[4],bl[5],blg,chan_th_dot,total_coll_dot,chan_th,total_coll,packet}
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>simulate 1  [&lt;=50000] {msg_delay[0].bb,msg_delay[1].bb,msg_delay[2].bb,coll_count_dot[0],coll_count_dot[1],coll_count_dot[2],node_th_dot[0],node_th_dot[1],node_th_dot[2],chan_th_dot,total_coll_dot}
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>simulate 1  [&lt;=100000] {bl,coll_count_dot,node_th_dot,chan_th_dot,coll_count[2],node_th[0],node_th[1],node_th[2],node_th[3],chan_th,next_packet[0].idd,next_packet[1].idd,next_packet[2].idd,msg_delay[0].bb,trace1[0],trace2[0],trace3[0],trace4[0],trace1[2],trace2[2],trace3[2],trace4[2]}
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>simulate 1  [&lt;=7000000] {bl,coll_count_dot,node_th_dot,chan_th_dot,msg_delay[0].bb}
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>Pr [&lt;=7000000] (&lt;&gt; node0.collision)
+			</formula>
+			<comment>
+			</comment>
+		</query>
+		<query>
+			<formula>simulate 1  [&lt;=700] {generator0.j,generator1.j,generator2.j,generator3.j,generator4.j,generator5.j,node0.busy,node1.busy,node2.busy,node3.busy,node4.busy,node5.busy,node0.T,node1.T,node2.T,node3.T,node4.T,node5.T,trace4[0],trace4[1],trace4[2],trace4[3],trace4[4],trace4[5],trace1[0],trace1[1],trace1[2],trace1[3],trace1[4],trace1[5],trace2[0],trace2[1],trace2[2],trace2[3],trace2[4],trace2[5],trace3[0],trace3[1],trace3[2],trace3[3],trace3[4],trace3[5],bl,coll_count_dot[0],node_th_dot[0],coll_count_dot[1],node_th_dot[1],coll_count_dot[2],node_th_dot[2],coll_count_dot[3],node_th_dot[3],coll_count_dot[4],node_th_dot[4],coll_count_dot[5],node_th_dot[5],chan_th_dot,total_coll_dot,total_coll,node_th[0],node_th[1],node_th[2],node_th[3],node_th[4],node_th[5],chan_th,next_packet[0].idd,next_packet[1].idd,next_packet[2].idd,msg_delay[0].bb,msg_delay[1].bb,msg_delay[2].bb,msg_delay[3].bb,msg_delay[4].bb,msg_delay[5].bb}
+			</formula>
+			<comment>
+			</comment>
+		</query>
+	</queries>
+</nta>
