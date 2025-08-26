@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+	<declaration>
+const int NODES = 6;
+const int WBASE = 16;
+const int MAX_BL = 63;
+const int B1    = 70;
+const int B2    = 14;
+const int FRAME = 148;
+const int MAX_K = 127;
+
+int channel_busy = 0;
+int starters = 0;
+
+int BL[NODES];
+bool hasPacket[NODES];
+int collisions[NODES];
+int successes[NODES];
+
+broadcast chan ch_coll;
+
+int min_int(int a, int b) { return a &lt; b ? a : b; }
+int max_int(int a, int b) { return a &gt; b ? a : b; }
+  </declaration>
+	<template>
+		<name>MAC_Layer</name>
+		<parameter>const int id</parameter>
+		<declaration>
+clock t;
+int k_slots;
+    </declaration>
+		<location id="id0" x="-221" y="-60">
+			<name x="-238" y="-102">idle</name>
+		</location>
+		<location id="id1" x="263" y="-60">
+			<name x="241" y="-94">beta1</name>
+			<label kind="invariant" x="233" y="-40">t &lt;= B1</label>
+		</location>
+		<location id="id2" x="488" y="-60">
+			<name x="476" y="-94">backoff</name>
+			<label kind="invariant" x="459" y="-26">t &lt;= k_slots * B2</label>
+		</location>
+		<location id="id3" x="1011" y="-60">
+			<name x="991" y="-102">start_tx</name>
+			<urgent/>
+		</location>
+		<location id="id4" x="1122" y="-59">
+			<name x="1139" y="-84">tx</name>
+			<label kind="invariant" x="1130" y="-16">t &lt;= FRAME</label>
+		</location>
+		<location id="id5" x="1123" y="-366">
+			<name x="1106" y="-417">collision</name>
+		</location>
+		<location id="id6" x="1123" y="288">
+			<name x="1147" y="272">success</name>
+		</location>
+		<init ref="id0"/>
+		<transition id="id7">
+			<source ref="id0"/>
+			<target ref="id1"/>
+			<label kind="guard" x="102" y="-179">hasPacket[id]</label>
+			<label kind="assignment" x="136" y="-153">t = 0</label>
+			<nail x="102" y="-145"/>
+		</transition>
+		<transition id="id8">
+			<source ref="id1"/>
+			<target ref="id2"/>
+			<label kind="select" x="314" y="-94">k:int[0,MAX_K]</label>
+			<label kind="guard" x="314" y="-119">k &lt;= (max_int(1, BL[id]) * WBASE - 1)</label>
+			<label kind="assignment" x="314" y="-145">k_slots = k</label>
+		</transition>
+		<transition id="id9">
+			<source ref="id1"/>
+			<target ref="id0"/>
+			<label kind="guard" x="-8" y="-52">channel_busy == 1</label>
+		</transition>
+		<transition id="id10">
+			<source ref="id2"/>
+			<target ref="id0"/>
+			<label kind="guard" x="331" y="101">channel_busy == 1</label>
+			<nail x="280" y="135"/>
+		</transition>
+		<transition id="id11">
+			<source ref="id2"/>
+			<target ref="id3"/>
+			<label kind="guard" x="629" y="-85">t &gt;= k_slots * B2 &amp;&amp; channel_busy == 0</label>
+			<label kind="assignment" x="578" y="-52">t = 0, starters = starters + 1, channel_busy = 1</label>
+		</transition>
+		<transition id="id12">
+			<source ref="id3"/>
+			<target ref="id4"/>
+		</transition>
+		<transition id="id13">
+			<source ref="id4"/>
+			<target ref="id5"/>
+			<label kind="synchronisation" x="1139" y="-306">ch_coll?</label>
+			<label kind="assignment" x="1139" y="-264">collisions[id] = collisions[id] + 1,
+BL[id] = min_int(MAX_BL, BL[id] + 1),
+starters = 0, channel_busy = 0, t = 0</label>
+		</transition>
+		<transition id="id14">
+			<source ref="id4"/>
+			<target ref="id6"/>
+			<label kind="guard" x="1139" y="93">t &gt;= FRAME &amp;&amp; starters == 1</label>
+			<label kind="assignment" x="1004" y="330">successes[id] = successes[id] + 1,
+BL[id] = max_int(1, BL[id] - 1),
+starters = 0, channel_busy = 0, t = 0</label>
+		</transition>
+		<transition id="id15">
+			<source ref="id5"/>
+			<target ref="id0"/>
+			<nail x="433" y="-366"/>
+		</transition>
+		<transition id="id16">
+			<source ref="id6"/>
+			<target ref="id0"/>
+			<nail x="399" y="288"/>
+		</transition>
+	</template>
+	<template>
+		<name>Channel</name>
+		<declaration>
+clock tc;
+    </declaration>
+		<location id="id17" x="0" y="0">
+			<name x="-59" y="-17">init</name>
+			<label kind="invariant" x="-20" y="20">tc &lt;= 1</label>
+		</location>
+		<init ref="id17"/>
+		<transition id="id18">
+			<source ref="id17"/>
+			<target ref="id17"/>
+			<label kind="guard" x="60" y="-10">starters &gt; 1</label>
+			<label kind="synchronisation" x="60" y="10">ch_coll!</label>
+			<label kind="assignment" x="60" y="30">tc = 0</label>
+			<nail x="-30" y="-30"/>
+			<nail x="30" y="-30"/>
+		</transition>
+		<transition id="id19">
+			<source ref="id17"/>
+			<target ref="id17"/>
+			<label kind="guard" x="60" y="60">tc &gt;= 1</label>
+			<label kind="assignment" x="60" y="100">tc = 0</label>
+			<nail x="-30" y="-30"/>
+			<nail x="30" y="-30"/>
+		</transition>
+	</template>
+	<template>
+		<name>Initializer</name>
+		<location id="id20" x="-161" y="0">
+			<name x="-169" y="-34">s</name>
+		</location>
+		<location id="id21" x="220" y="0">
+			<name x="221" y="-34">d</name>
+		</location>
+		<init ref="id20"/>
+		<transition id="id22">
+			<source ref="id20"/>
+			<target ref="id21"/>
+			<label kind="assignment" x="-178" y="17">BL[0]=1, BL[1]=1, BL[2]=1, BL[3]=1, BL[4]=1, BL[5]=1,
+hasPacket[0]=true, hasPacket[1]=true, hasPacket[2]=true,
+hasPacket[3]=true, hasPacket[4]=true, hasPacket[5]=true,
+channel_busy=0, starters=0</label>
+		</transition>
+	</template>
+	<system>
+chanmon = Channel();
+InitProc    = Initializer();
+
+node0 = MAC_Layer(0);
+node1 = MAC_Layer(1);
+node2 = MAC_Layer(2);
+node3 = MAC_Layer(3);
+node4 = MAC_Layer(4);
+node5 = MAC_Layer(5);
+
+system chanmon, InitProc,
+       node0, node1, node2, node3, node4, node5;
+  </system>
+	<queries>
+		<query>
+			<formula>A[] not deadlock</formula>
+			<comment>Deadlock-freedom</comment>
+		</query>
+		<query>
+			<formula>A[] not (starters &gt; 1 &amp;&amp; channel_busy == 1 &amp;&amp; not (exists(i:int[0,NODES-1]) MAC_Layer(i).ml_tx))</formula>
+			<comment>Channel busy implies some node is transmitting</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; (starters &gt; 1)</formula>
+			<comment>Reachable concurrent start (potential collision)</comment>
+		</query>
+	</queries>
+</nta>
