@@ -56,42 +56,42 @@ int k_slots;
 			<name x="1147" y="272">success</name>
 		</location>
 		<init ref="id0"/>
-		<transition id="id7">
+		<transition>
 			<source ref="id0"/>
 			<target ref="id1"/>
 			<label kind="guard" x="102" y="-179">hasPacket[id]</label>
 			<label kind="assignment" x="136" y="-153">t = 0</label>
 			<nail x="102" y="-145"/>
 		</transition>
-		<transition id="id8">
+		<transition>
 			<source ref="id1"/>
 			<target ref="id2"/>
 			<label kind="select" x="314" y="-94">k:int[0,MAX_K]</label>
 			<label kind="guard" x="314" y="-119">k &lt;= (max_int(1, BL[id]) * WBASE - 1)</label>
 			<label kind="assignment" x="314" y="-145">k_slots = k</label>
 		</transition>
-		<transition id="id9">
+		<transition>
 			<source ref="id1"/>
 			<target ref="id0"/>
 			<label kind="guard" x="-8" y="-52">channel_busy == 1</label>
 		</transition>
-		<transition id="id10">
+		<transition>
 			<source ref="id2"/>
 			<target ref="id0"/>
 			<label kind="guard" x="331" y="101">channel_busy == 1</label>
 			<nail x="280" y="135"/>
 		</transition>
-		<transition id="id11">
+		<transition>
 			<source ref="id2"/>
 			<target ref="id3"/>
 			<label kind="guard" x="629" y="-85">t &gt;= k_slots * B2 &amp;&amp; channel_busy == 0</label>
 			<label kind="assignment" x="578" y="-52">t = 0, starters = starters + 1, channel_busy = 1</label>
 		</transition>
-		<transition id="id12">
+		<transition>
 			<source ref="id3"/>
 			<target ref="id4"/>
 		</transition>
-		<transition id="id13">
+		<transition>
 			<source ref="id4"/>
 			<target ref="id5"/>
 			<label kind="synchronisation" x="1139" y="-306">ch_coll?</label>
@@ -99,7 +99,7 @@ int k_slots;
 BL[id] = min_int(MAX_BL, BL[id] + 1),
 starters = 0, channel_busy = 0, t = 0</label>
 		</transition>
-		<transition id="id14">
+		<transition>
 			<source ref="id4"/>
 			<target ref="id6"/>
 			<label kind="guard" x="1139" y="93">t &gt;= FRAME &amp;&amp; starters == 1</label>
@@ -107,12 +107,12 @@ starters = 0, channel_busy = 0, t = 0</label>
 BL[id] = max_int(1, BL[id] - 1),
 starters = 0, channel_busy = 0, t = 0</label>
 		</transition>
-		<transition id="id15">
+		<transition>
 			<source ref="id5"/>
 			<target ref="id0"/>
 			<nail x="433" y="-366"/>
 		</transition>
-		<transition id="id16">
+		<transition>
 			<source ref="id6"/>
 			<target ref="id0"/>
 			<nail x="399" y="288"/>
@@ -123,23 +123,23 @@ starters = 0, channel_busy = 0, t = 0</label>
 		<declaration>
 clock tc;
     </declaration>
-		<location id="id17" x="0" y="0">
-			<name x="-59" y="-17">init</name>
+		<location id="id7" x="0" y="0">
+			<name x="-59" y="-17">initinialization</name>
 			<label kind="invariant" x="-20" y="20">tc &lt;= 1</label>
 		</location>
-		<init ref="id17"/>
-		<transition id="id18">
-			<source ref="id17"/>
-			<target ref="id17"/>
+		<init ref="id7"/>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id7"/>
 			<label kind="guard" x="60" y="-10">starters &gt; 1</label>
 			<label kind="synchronisation" x="60" y="10">ch_coll!</label>
 			<label kind="assignment" x="60" y="30">tc = 0</label>
 			<nail x="-30" y="-30"/>
 			<nail x="30" y="-30"/>
 		</transition>
-		<transition id="id19">
-			<source ref="id17"/>
-			<target ref="id17"/>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id7"/>
 			<label kind="guard" x="60" y="60">tc &gt;= 1</label>
 			<label kind="assignment" x="60" y="100">tc = 0</label>
 			<nail x="-30" y="-30"/>
@@ -148,16 +148,16 @@ clock tc;
 	</template>
 	<template>
 		<name>Initializer</name>
-		<location id="id20" x="-161" y="0">
+		<location id="id8" x="-161" y="0">
 			<name x="-169" y="-34">s</name>
 		</location>
-		<location id="id21" x="220" y="0">
+		<location id="id9" x="220" y="0">
 			<name x="221" y="-34">d</name>
 		</location>
-		<init ref="id20"/>
-		<transition id="id22">
-			<source ref="id20"/>
-			<target ref="id21"/>
+		<init ref="id8"/>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id9"/>
 			<label kind="assignment" x="-178" y="17">BL[0]=1, BL[1]=1, BL[2]=1, BL[3]=1, BL[4]=1, BL[5]=1,
 hasPacket[0]=true, hasPacket[1]=true, hasPacket[2]=true,
 hasPacket[3]=true, hasPacket[4]=true, hasPacket[5]=true,
@@ -180,16 +180,22 @@ system chanmon, InitProc,
   </system>
 	<queries>
 		<query>
-			<formula>A[] not deadlock</formula>
-			<comment>Deadlock-freedom</comment>
+			<formula>A[] not deadlock
+			</formula>
+			<comment>Deadlock-freedom
+			</comment>
 		</query>
 		<query>
-			<formula>A[] not (starters &gt; 1 &amp;&amp; channel_busy == 1 &amp;&amp; not (exists(i:int[0,NODES-1]) MAC_Layer(i).ml_tx))</formula>
-			<comment>Channel busy implies some node is transmitting</comment>
+			<formula>A[] not (starters &gt; 1 &amp;&amp; channel_busy == 1 &amp;&amp; not (exists(i:int[0,NODES-1]) MAC_Layer(i).ml_tx))
+			</formula>
+			<comment>Channel busy implies some node is transmitting
+			</comment>
 		</query>
 		<query>
-			<formula>E&lt;&gt; (starters &gt; 1)</formula>
-			<comment>Reachable concurrent start (potential collision)</comment>
+			<formula>E&lt;&gt; (starters &gt; 1)
+			</formula>
+			<comment>Reachable concurrent start (potential collision)
+			</comment>
 		</query>
 	</queries>
 </nta>
